@@ -1,0 +1,2 @@
+musicbrainzngs==0.5dev
+mutagen==1.22
