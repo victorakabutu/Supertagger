@@ -12,10 +12,66 @@ __copyright__ = "Copyright (c) 2013 Victor Akabutu"
 
 import os
 import sys
-import SuperTagger
+
 
 count, choices, __NUMBER_OF_FILES_TO_DISPLAY__ = 0, [], 5
 
+class SuperTagger(MP3):
+	from mutagen.mp3 import MP3
+	from mutagen.easyid3 import EasyID3
+	import musicbrainzngs
+
+	musicbrainzngs.set_useragent("Music Tagger App", "0.1", "http://example.com/music") #some simple initialization
+	
+	#Mutable class variables
+	__RESULTS_LIMIT__ = 5 
+	__NUMBER_OF_FILES_TO_DISPLAY__ = 5 
+	
+	def __init__(self, fileName):
+		MP3.__init__(self, fileName, ID3=EasyID3)
+		self.results = []
+		
+	def get_search_results(self):
+		"""Queries musicbrainz database using string arguments"""
+		
+		self.results = musicbrainzngs.search_recordings(artist = old_artist, recording = old_title, release = old_album, tnum = old_track_number, limit = SuperTagger.__RESULTS_LIMIT__)['recording-list']
+		
+		"""this sequence of if statements is designed to query the database using incomplete parameters.
+		This is useful in the event that some of the pre-existing tag information is incorrect"""
+		if not self.results:
+			self.results = musicbrainzngs.search_recordings(recording = old_title, release = old_album, limit = SuperTagger.__RESULTS_LIMIT__)['recording-list']
+		if not self.results:
+			self.results = musicbrainzngs.search_recordings(artist = old_artist, recording = old_title, limit = SuperTagger.__RESULTS_LIMIT__)['recording-list']
+		if not self.results: #TODO: Search by duration
+			self.results = musicbrainzngs.search_recordings(recording = old_title, limit = SuperTagger.__RESULTS_LIMIT__)['recording-list']
+		
+		return self.results
+		
+	def return_result_metadata(self, i):
+		if not 0<= i < len(self.results):
+			raise IndexError('Results have indices between 0 and %s' % __RESULTS_LIMIT__)
+		result = self.results[i]
+		artist = result['artist-credit-phrase'] if isinstance(result['artist-credit-phrase'], unicode) else result['artist-credit-phrase']
+		title = result['title'].encode('utf-8') if isinstance(result['title'], unicode) else result['title']
+		album = result['release-list'][0]['title'] if isinstance(result['release-list'][0]['title'], unicode) else result['release-list'][0]['title']
+		tracknumber = result['release-list'][0]['medium-list'][1]['track-list'][0]['number']
+		try:
+			year = result['release-list'][0]['date'][:4]
+		except KeyError:
+			result['release-list'][0]['date'] = year = ''
+		
+		return artist, title, album, tracknumber, year	
+		
+	def return_file_metadata(self):
+		"""Prints the given file's information neatly. Info is a dictionary with list values"""
+
+		old_album, old_title, old_artist = self.get("album", [""])[0], self.get("title", [""])[0], self.get("artist", [""])[0]
+		old_date, old_track_number = self.get("date", [""])[0], self.get('tracknumber', [""])[0].split('/')[0]
+
+		return self.filename, old_album, old_title, old_artist, old_date, old_track_number
+
+		
+		
 def print_file_info(file_name, old_album, old_title, old_artist, old_date, old_track_number):
 
 	#TODO: Remove hard coding of column widths
@@ -64,7 +120,7 @@ def collect_tags(fileList):
         print 'No files found in %s. Exiting..' % (directory)
         sys.exit(0)
         
-    return [SuperTagger.SuperTagger(f) for f in fileList]
+    return [SuperTagger(f) for f in fileList]
 
 def take_input():
 	"""Asks user to specify music directory to search, whether search should be 1 layer deep, and whether
@@ -110,8 +166,10 @@ def ask_to_specify_correct_tags(files_to_repair, rename_tagged_files):
 		valid_chars = "-_.() %s%s" % (string.ascii_letters, string.digits)
 		return ''.join(c for c in title if c in valid_chars)
 		
-	for i, item in enumerate(seq.split()[:len(files_to_repair)]):
-		if item.isdigit() and 1 <= int(item) <= SuperTagger.SuperTagger.__RESULTS_LIMIT__:
+	for i, item in enumerate(seq.split()[:SuperTagger.__NUMBER_OF_FILES_TO_DISPLAY__]):
+		if i==__NUMBER_OF_FILES_TO_DISPLAY__:
+			raise IndexError()
+		elif item.isdigit() and 1 <= int(item) <= SuperTagger.__RESULTS_LIMIT__:
 			song = files_to_repair[i]
 			artist, title, album, tracknumber, year = files_to_repair[i].return_result_metadata(int(item)-1)
 
@@ -157,7 +215,7 @@ if __name__ == "__main__":
 			print "No results found"
 			continue
 
-		for i in xrange(SuperTagger.SuperTagger.__RESULTS_LIMIT__):
+		for i in xrange(SuperTagger.__RESULTS_LIMIT__):
 			artist, title, album, tracknumber, year = song.return_result_metadata(i)
 			
 			print str(i+1) + ")", #number results on screen
@@ -169,3 +227,46 @@ if __name__ == "__main__":
 	if files_to_repair:
 		ask_to_specify_correct_tags(files_to_repair, rename_tagged_files)
 		print
+
+
+#For future use to update ID3v1 tags (Windows compatibility).
+#ThE idea of using a UserDict-like object is due to Mark Pilgrim's 'Dive Into Python'
+"""
+def stripnulls(data):
+    "strip whitespace and nulls"
+    return data.replace("\00", " ").strip()
+
+class FileInfo(dict):
+    A base class for storing file metadata. Objects are dicts
+    def __init__(self, filename=None):
+        self["name"] = filename
+    
+class MP3FileInfo(FileInfo):
+    "store ID3v1.0 MP3 tags"
+    tagDataMap = {"title"   : (  3,  33, stripnulls),
+                  "artist"  : ( 33,  63, stripnulls),
+                  "album"   : ( 63,  93, stripnulls),
+                  "year"    : ( 93,  97, stripnulls),
+                  "comment" : ( 97, 126, stripnulls),
+                  "genre"   : (127, 128, ord)}
+    
+    def __parse(self, filename):
+        "parse ID3v1.0 tags from MP3 file"
+        self.clear()
+        try:
+            fsock = open(filename, "rb", 0)
+            try:
+                fsock.seek(-128, 2)
+                tagdata = fsock.read(128)
+            finally:
+                fsock.close()
+            if tagdata[:3] == 'TAG':
+                for tag, (start, end, parseFunc) in self.tagDataMap.items():
+                    self[tag] = parseFunc(tagdata[start:end])
+        except IOError:
+            pass
+
+    def __setitem__(self, key, item):
+        if key == "name" and item:
+            self.__parse(item)
+        FileInfo.__setitem__(self, key, item)"""
